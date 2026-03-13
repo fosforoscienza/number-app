@@ -6,17 +6,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.Number_App_DB_MONGODB_URI;
 
-if (!MONGODB_URI) {
-  console.error('ERROR: Number_App_DB_MONGODB_URI environment variable is not set.');
-  process.exit(1);
-}
-
 // --- Mongoose connection cache (required for Vercel serverless) ---
 
 let cached = global._mongooseCache;
 if (!cached) cached = global._mongooseCache = { conn: null, promise: null };
 
 async function connectDB() {
+  if (!MONGODB_URI) throw new Error('Number_App_DB_MONGODB_URI non impostata');
   if (cached.conn) return cached.conn;
   if (!cached.promise) {
     cached.promise = mongoose.connect(MONGODB_URI);
@@ -143,6 +139,10 @@ app.delete('/api/reset', async (req, res) => {
 // --- Start (solo in locale, non su Vercel) ---
 
 if (require.main === module) {
+  if (!MONGODB_URI) {
+    console.error('ERROR: Number_App_DB_MONGODB_URI non impostata');
+    process.exit(1);
+  }
   mongoose.connect(MONGODB_URI)
     .then(async () => {
       await ensureSettings();
