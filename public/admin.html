@@ -39,7 +39,7 @@
     .actions {
       display: flex;
       gap: 12px;
-      margin-bottom: 24px;
+      margin-bottom: 16px;
       align-items: center;
       flex-wrap: wrap;
     }
@@ -52,22 +52,41 @@
       cursor: pointer;
       transition: background 0.2s;
     }
-    .btn-refresh { background: #4f6ef7; color: #fff; }
-    .btn-refresh:hover { background: #3a57d6; }
     .btn-reset { background: #fee2e2; color: #ef4444; }
     .btn-reset:hover { background: #fca5a5; color: #b91c1c; }
-    .auto-label { font-size: 0.85rem; color: #888; margin-left: auto; }
 
+    .live-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 20px;
+      font-size: 0.85rem;
+      color: #888;
+    }
     .status-dot {
-      display: inline-block;
-      width: 8px; height: 8px;
+      width: 10px; height: 10px;
       border-radius: 50%;
       background: #22c55e;
-      margin-right: 6px;
-      animation: pulse 2s infinite;
+      flex-shrink: 0;
+      animation: pulse 1.5s infinite;
     }
     .status-dot.error { background: #ef4444; animation: none; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    .progress-bar {
+      flex: 1;
+      height: 4px;
+      background: #e8eaff;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: #4f6ef7;
+      border-radius: 4px;
+      width: 0%;
+      transition: width 0.1s linear;
+    }
 
     .table-wrapper {
       background: #fff;
@@ -86,10 +105,7 @@
       color: #666;
       border-bottom: 1px solid #e8eaff;
     }
-    tbody tr {
-      border-bottom: 1px solid #f0f0f0;
-      transition: background 0.15s;
-    }
+    tbody tr { border-bottom: 1px solid #f0f0f0; transition: background 0.15s; }
     tbody tr:last-child { border-bottom: none; }
     tbody tr:hover { background: #f8f9ff; }
     tbody td { padding: 12px 20px; color: #1a1a2e; font-size: 0.95rem; }
@@ -104,7 +120,7 @@
 
     <div class="stats">
       <div class="stat-card">
-        <div class="label">Totale inserimenti</div>
+        <div class="label">Totale risposte</div>
         <div class="value" id="count">—</div>
       </div>
       <div class="stat-card avg">
@@ -114,11 +130,15 @@
     </div>
 
     <div class="actions">
-      <button class="btn-refresh" onclick="loadData()">Aggiorna</button>
       <button class="btn-reset" onclick="resetData()">🗑 Resetta dati</button>
-      <span class="auto-label">
-        <span class="status-dot" id="dot"></span>Aggiornamento ogni 3s
-      </span>
+    </div>
+
+    <!-- Barra live con pallino e progress -->
+    <div class="live-bar">
+      <div class="status-dot" id="dot"></div>
+      <span id="liveLabel">Aggiornamento automatico attivo</span>
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <span id="lastUpdate">—</span>
     </div>
 
     <div class="table-wrapper">
@@ -134,11 +154,32 @@
   </div>
 
   <script>
-    const dot = document.getElementById('dot');
+    const INTERVAL   = 3000;   // ms tra un aggiornamento e l'altro
+    const dot        = document.getElementById('dot');
+    const liveLabel  = document.getElementById('liveLabel');
+    const lastUpdate = document.getElementById('lastUpdate');
+    const fill       = document.getElementById('progressFill');
 
+    // ── Barra di progresso animata ────────────────────────────────────────────
+    let progressStart = null;
+    function animateProgress(ts) {
+      if (!progressStart) progressStart = ts;
+      const elapsed = ts - progressStart;
+      const pct     = Math.min((elapsed / INTERVAL) * 100, 100);
+      fill.style.width = pct + '%';
+      if (pct < 100) requestAnimationFrame(animateProgress);
+    }
+    function resetProgress() {
+      progressStart = null;
+      fill.style.width = '0%';
+      requestAnimationFrame(animateProgress);
+    }
+
+    // ── Carica dati ───────────────────────────────────────────────────────────
     async function loadData() {
       try {
         const res  = await fetch('/api/data');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
 
         document.getElementById('count').textContent = data.count;
@@ -154,14 +195,22 @@
           ).join('');
         }
 
+        // Stato OK
         dot.classList.remove('error');
-      } catch {
+        liveLabel.textContent = 'Aggiornamento automatico attivo';
+        const now = new Date();
+        lastUpdate.textContent = now.toLocaleTimeString('it-IT');
+
+      } catch (err) {
         dot.classList.add('error');
-        document.getElementById('tableBody').innerHTML =
-          '<tr><td colspan="2" class="empty">⚠️ Errore nel caricamento</td></tr>';
+        liveLabel.textContent = '⚠️ Errore connessione';
+        console.error('[admin] loadData:', err.message);
       }
+
+      resetProgress();
     }
 
+    // ── Reset ─────────────────────────────────────────────────────────────────
     async function resetData() {
       if (!confirm('Sei sicuro di voler cancellare tutti i dati? L\'operazione è irreversibile.')) return;
       try {
@@ -172,8 +221,9 @@
       }
     }
 
+    // ── Avvio ─────────────────────────────────────────────────────────────────
     loadData();
-    setInterval(loadData, 3000);   // 3s durante la raccolta dati
+    setInterval(loadData, INTERVAL);
   </script>
 </body>
 </html>

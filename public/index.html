@@ -50,7 +50,7 @@
       border: none;
       border-radius: 10px;
       cursor: pointer;
-      transition: background 0.2s, opacity 0.2s;
+      transition: background 0.2s;
     }
     button:hover:not(:disabled) { background: #3a57d6; }
     button:disabled { background: #a0aec0; cursor: not-allowed; }
@@ -91,24 +91,39 @@
   </div>
 
   <script>
-    const input    = document.getElementById('numInput');
-    const feedback = document.getElementById('feedback');
-    const btn      = document.getElementById('submitBtn');
+    const input          = document.getElementById('numInput');
+    const feedback       = document.getElementById('feedback');
+    const btn            = document.getElementById('submitBtn');
     const alreadySentBox = document.getElementById('alreadySent');
 
-    const LS_KEY = 'palline_app_submitted';
-    let isSubmitting = false;  // Blocca doppio click
+    const LS_TOKEN_KEY = 'palline_browser_token';   // token univoco per browser
+    const LS_STATE_KEY = 'palline_app_submitted';   // { resetToken }
+
+    // ── Token univoco per browser ─────────────────────────────────────────────
+    // Generato una sola volta e conservato in localStorage.
+    // In questo modo ogni browser è identificato indipendentemente dall'IP.
+    function getBrowserToken() {
+      let token = localStorage.getItem(LS_TOKEN_KEY);
+      if (!token) {
+        token = crypto.randomUUID
+          ? crypto.randomUUID()
+          : Date.now().toString(36) + Math.random().toString(36).slice(2);
+        localStorage.setItem(LS_TOKEN_KEY, token);
+      }
+      return token;
+    }
 
     // ── Controlla stato all'avvio ─────────────────────────────────────────────
     async function checkSubmissionState() {
       try {
         const res  = await fetch('/api/data');
         const data = await res.json();
-        const stored = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+        const stored = JSON.parse(localStorage.getItem(LS_STATE_KEY) || 'null');
+        // Se il resetToken coincide → questo browser ha già inviato in questo ciclo
         if (stored && stored.resetToken === data.resetToken) {
           lockForm();
         }
-      } catch { /* se il server non risponde, lascia il form attivo */ }
+      } catch { /* server non raggiungibile: lascia il form attivo */ }
     }
 
     function lockForm() {
@@ -124,44 +139,43 @@
     });
 
     // ── Invio con retry automatico ────────────────────────────────────────────
+    let isSubmitting = false;
+
     async function fetchWithRetry(url, options, maxRetries = 3) {
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          const res = await fetch(url, options);
-          return res;  // qualsiasi risposta HTTP è ok (gestiamo gli errori fuori)
-        } catch (networkErr) {
-          if (attempt === maxRetries) throw networkErr;
-          showFeedback(`Tentativo ${attempt}/${maxRetries}...`, 'loading');
-          await new Promise(r => setTimeout(r, 800 * attempt));
+          return await fetch(url, options);
+        } catch {
+          if (attempt === maxRetries) throw new Error('Connessione persa');
+          showFeedback(`Tentativo ${attempt}/${maxRetries}…`, 'loading');
+          await new Promise(r => setTimeout(r, 700 * attempt));
         }
       }
     }
 
     async function submitNumber() {
-      if (isSubmitting) return;           // Blocca doppio click
+      if (isSubmitting) return;
       const value = input.value.trim();
       if (value === '' || isNaN(Number(value))) {
         showFeedback('Inserisci un numero valido', 'error');
         return;
       }
 
-      isSubmitting  = true;
-      btn.disabled  = true;
+      isSubmitting    = true;
+      btn.disabled    = true;
       btn.textContent = 'Invio…';
-      showFeedback('', '');
 
       try {
         const res  = await fetchWithRetry('/api/submit', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ number: value })
+          body:    JSON.stringify({ number: value, browserToken: getBrowserToken() })
         });
         const data = await res.json();
 
         if (res.ok) {
-          // Salva il resetToken in localStorage per ricordare l'invio anche dopo reload
-          localStorage.setItem(LS_KEY, JSON.stringify({ resetToken: data.resetToken }));
-          showFeedback(`✅ Numero inviato! (totale: ${data.count})`, 'success');
+          localStorage.setItem(LS_STATE_KEY, JSON.stringify({ resetToken: data.resetToken }));
+          showFeedback(`✅ Inviato! (totale risposte: ${data.count})`, 'success');
           input.value = '';
           setTimeout(lockForm, 1500);
         } else if (data.alreadySubmitted) {
@@ -169,15 +183,17 @@
           lockForm();
         } else {
           showFeedback(data.error || "Errore nell'invio", 'error');
-          btn.disabled = false;
-          isSubmitting = false;
+          btn.disabled    = false;
+          btn.textContent = 'Invia';
+          isSubmitting    = false;
         }
       } catch {
         showFeedback('⚠️ Connessione persa. Riprova.', 'error');
-        btn.disabled = false;
-        isSubmitting = false;
-      } finally {
+        btn.disabled    = false;
         btn.textContent = 'Invia';
+        isSubmitting    = false;
+      } finally {
+        if (!btn.disabled) btn.textContent = 'Invia';
       }
     }
 
