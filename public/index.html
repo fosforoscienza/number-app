@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inserisci il tuo numero</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #f0f4ff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+      padding: 48px 40px;
+      width: 100%;
+      max-width: 400px;
+      text-align: center;
+    }
+    h1 {
+      font-size: 1.6rem;
+      color: #1a1a2e;
+      margin-bottom: 8px;
+    }
+    p.subtitle {
+      color: #666;
+      font-size: 0.95rem;
+      margin-bottom: 32px;
+    }
+    input[type="number"] {
+      width: 100%;
+      padding: 14px 16px;
+      font-size: 1.4rem;
+      border: 2px solid #d0d7ff;
+      border-radius: 10px;
+      outline: none;
+      text-align: center;
+      transition: border-color 0.2s;
+    }
+    input[type="number"]:focus {
+      border-color: #4f6ef7;
+    }
+    button {
+      margin-top: 16px;
+      width: 100%;
+      padding: 14px;
+      font-size: 1rem;
+      font-weight: 600;
+      background: #4f6ef7;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #3a57d6; }
+    button:disabled { background: #a0aec0; cursor: not-allowed; }
+    .feedback {
+      margin-top: 20px;
+      font-size: 1rem;
+      min-height: 28px;
+      transition: opacity 0.3s;
+    }
+    .feedback.success { color: #22c55e; font-weight: 600; }
+    .feedback.error   { color: #ef4444; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Inserisci un numero</h1>
+    <p class="subtitle">Digita il tuo numero e premi Invio</p>
+    <input type="number" id="numInput" placeholder="es. 42" autofocus>
+    <button id="submitBtn" onclick="submitNumber()">Invia</button>
+    <div class="feedback" id="feedback"></div>
+  </div>
+
+  <script>
+    const input = document.getElementById('numInput');
+    const feedback = document.getElementById('feedback');
+    const btn = document.getElementById('submitBtn');
+
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') submitNumber();
+    });
+
+    async function submitNumber() {
+      const value = input.value.trim();
+      if (value === '' || isNaN(Number(value))) {
+        showFeedback('Inserisci un numero valido', 'error');
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ number: value })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          showFeedback(`Numero inviato! (totale: ${data.count})`, 'success');
+          input.value = '';
+          input.focus();
+        } else {
+          showFeedback('Errore nell\'invio', 'error');
+        }
+      } catch {
+        showFeedback('Impossibile raggiungere il server', 'error');
+      }
+      btn.disabled = false;
+    }
+
+    function showFeedback(msg, type) {
+      feedback.textContent = msg;
+      feedback.className = 'feedback ' + type;
+      clearTimeout(feedback._timer);
+      feedback._timer = setTimeout(() => {
+        feedback.textContent = '';
+        feedback.className = 'feedback';
+      }, 3000);
+    }
+  </script>
+</body>
+</html>

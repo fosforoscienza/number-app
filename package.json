@@ -1,0 +1,12 @@
+{
+  "name": "number-app",
+  "version": "1.0.0",
+  "description": "Raccolta numeri multi-utente",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
