@@ -4,11 +4,25 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_URI = process.env.Number_App_DB_MONGODB_URI;
 
 if (!MONGODB_URI) {
-  console.error('ERROR: MONGODB_URI environment variable is not set.');
+  console.error('ERROR: Number_App_DB_MONGODB_URI environment variable is not set.');
   process.exit(1);
+}
+
+// --- Mongoose connection cache (required for Vercel serverless) ---
+
+let cached = global._mongooseCache;
+if (!cached) cached = global._mongooseCache = { conn: null, promise: null };
+
+async function connectDB() {
+  if (cached.conn) return cached.conn;
+  if (!cached.promise) {
+    cached.promise = mongoose.connect(MONGODB_URI);
+  }
+  cached.conn = await cached.promise;
+  return cached.conn;
 }
 
 // --- Schemas ---
@@ -27,9 +41,9 @@ const settingsSchema = new mongoose.Schema({
   resetToken: { type: String, required: true }
 });
 
-const NumberEntry = mongoose.model('NumberEntry', numberSchema);
-const SubmittedIp = mongoose.model('SubmittedIp', submittedIpSchema);
-const Settings = mongoose.model('Settings', settingsSchema);
+const NumberEntry = mongoose.models.NumberEntry || mongoose.model('NumberEntry', numberSchema);
+const SubmittedIp = mongoose.models.SubmittedIp || mongoose.model('SubmittedIp', submittedIpSchema);
+const Settings    = mongoose.models.Settings    || mongoose.model('Settings', settingsSchema);
 
 // --- Helpers ---
 
@@ -56,11 +70,21 @@ async function ensureSettings() {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Connetti DB prima di ogni richiesta API
+app.use('/api', async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'Connessione al database fallita' });
+  }
+});
+
 // --- API ---
 
-// GET /api/data — lista numeri, media, resetToken
 app.get('/api/data', async (req, res) => {
   try {
+    await ensureSettings();
     const entries = await NumberEntry.find().sort({ createdAt: 1 });
     const values = entries.map(e => e.value);
     const count = values.length;
@@ -79,7 +103,6 @@ app.get('/api/data', async (req, res) => {
   }
 });
 
-// POST /api/submit — invia un numero (un solo invio per IP)
 app.post('/api/submit', async (req, res) => {
   const { number } = req.body;
   const parsed = parseFloat(number);
@@ -105,7 +128,6 @@ app.post('/api/submit', async (req, res) => {
   }
 });
 
-// DELETE /api/reset — svuota tutto e genera nuovo resetToken
 app.delete('/api/reset', async (req, res) => {
   try {
     await NumberEntry.deleteMany({});
@@ -118,15 +140,19 @@ app.delete('/api/reset', async (req, res) => {
   }
 });
 
-// --- Start ---
+// --- Start (solo in locale, non su Vercel) ---
 
-mongoose.connect(MONGODB_URI)
-  .then(async () => {
-    await ensureSettings();
-    console.log('MongoDB connesso');
-    app.listen(PORT, () => console.log(`Server avviato su http://localhost:${PORT}`));
-  })
-  .catch(err => {
-    console.error('Errore connessione MongoDB:', err.message);
-    process.exit(1);
-  });
+if (require.main === module) {
+  mongoose.connect(MONGODB_URI)
+    .then(async () => {
+      await ensureSettings();
+      console.log('MongoDB connesso');
+      app.listen(PORT, () => console.log(`Server avviato su http://localhost:${PORT}`));
+    })
+    .catch(err => {
+      console.error('Errore connessione MongoDB:', err.message);
+      process.exit(1);
+    });
+}
+
+module.exports = app;
