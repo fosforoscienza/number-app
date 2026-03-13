@@ -23,16 +23,9 @@
       max-width: 400px;
       text-align: center;
     }
-    h1 {
-      font-size: 1.6rem;
-      color: #1a1a2e;
-      margin-bottom: 8px;
-    }
-    p.subtitle {
-      color: #666;
-      font-size: 0.95rem;
-      margin-bottom: 32px;
-    }
+    h1 { font-size: 1.6rem; color: #1a1a2e; margin-bottom: 8px; }
+    p.subtitle { color: #666; font-size: 0.95rem; margin-bottom: 32px; }
+
     input[type="number"] {
       width: 100%;
       padding: 14px 16px;
@@ -43,9 +36,9 @@
       text-align: center;
       transition: border-color 0.2s;
     }
-    input[type="number"]:focus {
-      border-color: #4f6ef7;
-    }
+    input[type="number"]:focus { border-color: #4f6ef7; }
+    input:disabled { background: #f5f5f5; color: #aaa; cursor: not-allowed; }
+
     button {
       margin-top: 16px;
       width: 100%;
@@ -59,16 +52,29 @@
       cursor: pointer;
       transition: background 0.2s;
     }
-    button:hover { background: #3a57d6; }
+    button:hover:not(:disabled) { background: #3a57d6; }
     button:disabled { background: #a0aec0; cursor: not-allowed; }
+
     .feedback {
       margin-top: 20px;
       font-size: 1rem;
       min-height: 28px;
-      transition: opacity 0.3s;
     }
     .feedback.success { color: #22c55e; font-weight: 600; }
     .feedback.error   { color: #ef4444; font-weight: 600; }
+    .feedback.info    { color: #f59e0b; font-weight: 600; }
+
+    .already-sent {
+      margin-top: 24px;
+      padding: 16px;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 10px;
+      color: #15803d;
+      font-size: 0.95rem;
+      display: none;
+    }
+    .already-sent.visible { display: block; }
   </style>
 </head>
 <body>
@@ -78,12 +84,37 @@
     <input type="number" id="numInput" placeholder="es. 42" autofocus>
     <button id="submitBtn" onclick="submitNumber()">Invia</button>
     <div class="feedback" id="feedback"></div>
+    <div class="already-sent" id="alreadySent">
+      Hai già inviato il tuo numero.<br>Potrai inviarne un altro dopo il prossimo reset.
+    </div>
   </div>
 
   <script>
     const input = document.getElementById('numInput');
     const feedback = document.getElementById('feedback');
     const btn = document.getElementById('submitBtn');
+    const alreadySentBox = document.getElementById('alreadySent');
+
+    const LS_KEY = 'number_app_submitted';
+
+    // Controlla lo stato all'avvio: confronta il resetToken locale con quello del server
+    async function checkSubmissionState() {
+      try {
+        const res = await fetch('/api/data');
+        const data = await res.json();
+        const stored = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+        if (stored && stored.resetToken === data.resetToken) {
+          lockForm();
+        }
+      } catch { /* se il server non risponde, lascia il form attivo */ }
+    }
+
+    function lockForm() {
+      input.disabled = true;
+      btn.disabled = true;
+      alreadySentBox.classList.add('visible');
+      feedback.textContent = '';
+    }
 
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter') submitNumber();
@@ -102,29 +133,42 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ number: value })
         });
+        const data = await res.json();
+
         if (res.ok) {
-          const data = await res.json();
+          // Salva il resetToken corrente in localStorage
+          const metaRes = await fetch('/api/data');
+          const meta = await metaRes.json();
+          localStorage.setItem(LS_KEY, JSON.stringify({ resetToken: meta.resetToken }));
           showFeedback(`Numero inviato! (totale: ${data.count})`, 'success');
           input.value = '';
-          input.focus();
+          setTimeout(lockForm, 1500);
+        } else if (data.alreadySubmitted) {
+          showFeedback('Hai già inviato il tuo numero', 'info');
+          lockForm();
         } else {
-          showFeedback('Errore nell\'invio', 'error');
+          showFeedback(data.error || 'Errore nell\'invio', 'error');
+          btn.disabled = false;
         }
       } catch {
         showFeedback('Impossibile raggiungere il server', 'error');
+        btn.disabled = false;
       }
-      btn.disabled = false;
     }
 
     function showFeedback(msg, type) {
       feedback.textContent = msg;
       feedback.className = 'feedback ' + type;
       clearTimeout(feedback._timer);
-      feedback._timer = setTimeout(() => {
-        feedback.textContent = '';
-        feedback.className = 'feedback';
-      }, 3000);
+      if (type === 'error') {
+        feedback._timer = setTimeout(() => {
+          feedback.textContent = '';
+          feedback.className = 'feedback';
+        }, 3000);
+      }
     }
+
+    checkSubmissionState();
   </script>
 </body>
 </html>
