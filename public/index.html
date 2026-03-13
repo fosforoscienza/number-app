@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Inserisci il tuo numero</title>
+  <title>Inserisci il numero di palline</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -50,7 +50,7 @@
       border: none;
       border-radius: 10px;
       cursor: pointer;
-      transition: background 0.2s;
+      transition: background 0.2s, opacity 0.2s;
     }
     button:hover:not(:disabled) { background: #3a57d6; }
     button:disabled { background: #a0aec0; cursor: not-allowed; }
@@ -63,6 +63,7 @@
     .feedback.success { color: #22c55e; font-weight: 600; }
     .feedback.error   { color: #ef4444; font-weight: 600; }
     .feedback.info    { color: #f59e0b; font-weight: 600; }
+    .feedback.loading { color: #888; }
 
     .already-sent {
       margin-top: 24px;
@@ -79,28 +80,29 @@
 </head>
 <body>
   <div class="card">
-    <h1>Inserisci un numero</h1>
-    <p class="subtitle">Digita il tuo numero e premi Invio</p>
-    <input type="number" id="numInput" placeholder="es. 42" autofocus>
+    <h1>Quante palline ci sono?</h1>
+    <p class="subtitle">Inserisci il numero di palline</p>
+    <input type="number" id="numInput" placeholder="es. 42" autofocus min="0">
     <button id="submitBtn" onclick="submitNumber()">Invia</button>
     <div class="feedback" id="feedback"></div>
     <div class="already-sent" id="alreadySent">
-      Hai già inviato il tuo numero.<br>Potrai inviarne un altro dopo il prossimo reset.
+      ✅ Hai già inviato il tuo numero.<br>Potrai inviarne un altro dopo il prossimo reset.
     </div>
   </div>
 
   <script>
-    const input = document.getElementById('numInput');
+    const input    = document.getElementById('numInput');
     const feedback = document.getElementById('feedback');
-    const btn = document.getElementById('submitBtn');
+    const btn      = document.getElementById('submitBtn');
     const alreadySentBox = document.getElementById('alreadySent');
 
-    const LS_KEY = 'number_app_submitted';
+    const LS_KEY = 'palline_app_submitted';
+    let isSubmitting = false;  // Blocca doppio click
 
-    // Controlla lo stato all'avvio: confronta il resetToken locale con quello del server
+    // ── Controlla stato all'avvio ─────────────────────────────────────────────
     async function checkSubmissionState() {
       try {
-        const res = await fetch('/api/data');
+        const res  = await fetch('/api/data');
         const data = await res.json();
         const stored = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
         if (stored && stored.resetToken === data.resetToken) {
@@ -111,60 +113,83 @@
 
     function lockForm() {
       input.disabled = true;
-      btn.disabled = true;
+      btn.disabled   = true;
       alreadySentBox.classList.add('visible');
       feedback.textContent = '';
+      feedback.className   = 'feedback';
     }
 
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter') submitNumber();
     });
 
+    // ── Invio con retry automatico ────────────────────────────────────────────
+    async function fetchWithRetry(url, options, maxRetries = 3) {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const res = await fetch(url, options);
+          return res;  // qualsiasi risposta HTTP è ok (gestiamo gli errori fuori)
+        } catch (networkErr) {
+          if (attempt === maxRetries) throw networkErr;
+          showFeedback(`Tentativo ${attempt}/${maxRetries}...`, 'loading');
+          await new Promise(r => setTimeout(r, 800 * attempt));
+        }
+      }
+    }
+
     async function submitNumber() {
+      if (isSubmitting) return;           // Blocca doppio click
       const value = input.value.trim();
       if (value === '' || isNaN(Number(value))) {
         showFeedback('Inserisci un numero valido', 'error');
         return;
       }
-      btn.disabled = true;
+
+      isSubmitting  = true;
+      btn.disabled  = true;
+      btn.textContent = 'Invio…';
+      showFeedback('', '');
+
       try {
-        const res = await fetch('/api/submit', {
-          method: 'POST',
+        const res  = await fetchWithRetry('/api/submit', {
+          method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ number: value })
+          body:    JSON.stringify({ number: value })
         });
         const data = await res.json();
 
         if (res.ok) {
-          // Salva il resetToken corrente in localStorage
-          const metaRes = await fetch('/api/data');
-          const meta = await metaRes.json();
-          localStorage.setItem(LS_KEY, JSON.stringify({ resetToken: meta.resetToken }));
-          showFeedback(`Numero inviato! (totale: ${data.count})`, 'success');
+          // Salva il resetToken in localStorage per ricordare l'invio anche dopo reload
+          localStorage.setItem(LS_KEY, JSON.stringify({ resetToken: data.resetToken }));
+          showFeedback(`✅ Numero inviato! (totale: ${data.count})`, 'success');
           input.value = '';
           setTimeout(lockForm, 1500);
         } else if (data.alreadySubmitted) {
           showFeedback('Hai già inviato il tuo numero', 'info');
           lockForm();
         } else {
-          showFeedback(data.error || 'Errore nell\'invio', 'error');
+          showFeedback(data.error || "Errore nell'invio", 'error');
           btn.disabled = false;
+          isSubmitting = false;
         }
       } catch {
-        showFeedback('Impossibile raggiungere il server', 'error');
+        showFeedback('⚠️ Connessione persa. Riprova.', 'error');
         btn.disabled = false;
+        isSubmitting = false;
+      } finally {
+        btn.textContent = 'Invia';
       }
     }
 
     function showFeedback(msg, type) {
       feedback.textContent = msg;
-      feedback.className = 'feedback ' + type;
+      feedback.className   = 'feedback ' + type;
       clearTimeout(feedback._timer);
       if (type === 'error') {
         feedback._timer = setTimeout(() => {
           feedback.textContent = '';
-          feedback.className = 'feedback';
-        }, 3000);
+          feedback.className   = 'feedback';
+        }, 4000);
       }
     }
 

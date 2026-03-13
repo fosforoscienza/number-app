@@ -9,20 +9,49 @@ const DATA_FILE = path.join(__dirname, 'data.json');
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- File storage helpers ---
+// ─── In-memory state (unica fonte di verità) ──────────────────────────────────
+// Node.js è single-thread: le operazioni sincrone sull'oggetto state
+// non hanno race condition, anche con 300 richieste concorrenti.
 
-function readData() {
-  if (!fs.existsSync(DATA_FILE)) {
-    const initial = { numbers: [], submittedIps: [], resetToken: Date.now().toString() };
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
-    return initial;
+let state = {
+  numbers: [],
+  submittedIps: new Set(),
+  resetToken: Date.now().toString()
+};
+
+// ─── Persistenza su file (backup asincrono, non bloccante) ───────────────────
+
+let saveTimer = null;
+
+function scheduleSave() {
+  // Raggruppa scritture ravvicinate in un'unica operazione (debounce 200ms)
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const payload = {
+      numbers: state.numbers,
+      submittedIps: [...state.submittedIps],
+      resetToken: state.resetToken
+    };
+    fs.writeFile(DATA_FILE, JSON.stringify(payload), err => {
+      if (err) console.error('[save] Errore scrittura file:', err.message);
+    });
+  }, 200);
+}
+
+function loadFromFile() {
+  try {
+    if (!fs.existsSync(DATA_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    state.numbers = Array.isArray(raw.numbers) ? raw.numbers : [];
+    state.submittedIps = new Set(Array.isArray(raw.submittedIps) ? raw.submittedIps : []);
+    state.resetToken = raw.resetToken || Date.now().toString();
+    console.log(`[boot] Caricati ${state.numbers.length} numeri da file`);
+  } catch (err) {
+    console.error('[boot] Impossibile leggere data.json, parto da zero:', err.message);
   }
-  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
 }
 
-function writeData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function getClientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
@@ -30,20 +59,19 @@ function getClientIp(req) {
   return req.socket.remoteAddress;
 }
 
-// --- API ---
+// ─── API ─────────────────────────────────────────────────────────────────────
 
 // GET /api/data
 app.get('/api/data', (req, res) => {
-  const data = readData();
-  const count = data.numbers.length;
+  const count = state.numbers.length;
   const average = count > 0
-    ? data.numbers.reduce((sum, n) => sum + n, 0) / count
+    ? state.numbers.reduce((sum, n) => sum + n, 0) / count
     : null;
   res.json({
-    entries: data.numbers.map((value, i) => ({ id: i + 1, value })),
+    entries: state.numbers.map((value, i) => ({ id: i + 1, value })),
     average,
     count,
-    resetToken: data.resetToken
+    resetToken: state.resetToken
   });
 });
 
@@ -51,30 +79,37 @@ app.get('/api/data', (req, res) => {
 app.post('/api/submit', (req, res) => {
   const { number } = req.body;
   const parsed = parseFloat(number);
+
   if (number === undefined || number === null || number === '' || isNaN(parsed)) {
     return res.status(400).json({ error: 'Numero non valido' });
   }
 
   const ip = getClientIp(req);
-  const data = readData();
 
-  if (data.submittedIps.includes(ip)) {
+  if (state.submittedIps.has(ip)) {
     return res.status(403).json({ error: 'Hai già inviato un numero', alreadySubmitted: true });
   }
 
-  data.numbers.push(parsed);
-  data.submittedIps.push(ip);
-  writeData(data);
+  // Aggiorna stato in memoria (atomico nel single-thread di Node.js)
+  state.numbers.push(parsed);
+  state.submittedIps.add(ip);
 
-  res.json({ ok: true, count: data.numbers.length });
+  // Salva su file in modo asincrono senza bloccare la risposta
+  scheduleSave();
+
+  res.json({ ok: true, count: state.numbers.length, resetToken: state.resetToken });
 });
 
 // DELETE /api/reset
 app.delete('/api/reset', (req, res) => {
-  writeData({ numbers: [], submittedIps: [], resetToken: Date.now().toString() });
-  res.json({ ok: true });
+  state.numbers = [];
+  state.submittedIps = new Set();
+  state.resetToken = Date.now().toString();
+  scheduleSave();
+  res.json({ ok: true, resetToken: state.resetToken });
 });
 
-// --- Start ---
+// ─── Avvio ───────────────────────────────────────────────────────────────────
 
+loadFromFile();
 app.listen(PORT, () => console.log(`Server avviato su http://localhost:${PORT}`));
