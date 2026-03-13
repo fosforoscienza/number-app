@@ -1,47 +1,28 @@
 const express = require('express');
-const mongoose = require('mongoose');
+const fs = require('fs');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MONGODB_URI = process.env.Number_App_DB_MONGODB_URI;
+const DATA_FILE = path.join(__dirname, 'data.json');
 
-// --- Mongoose connection cache (required for Vercel serverless) ---
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-let cached = global._mongooseCache;
-if (!cached) cached = global._mongooseCache = { conn: null, promise: null };
+// --- File storage helpers ---
 
-async function connectDB() {
-  if (!MONGODB_URI) throw new Error('Number_App_DB_MONGODB_URI non impostata');
-  if (cached.conn) return cached.conn;
-  if (!cached.promise) {
-    cached.promise = mongoose.connect(MONGODB_URI);
+function readData() {
+  if (!fs.existsSync(DATA_FILE)) {
+    const initial = { numbers: [], submittedIps: [], resetToken: Date.now().toString() };
+    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
+    return initial;
   }
-  cached.conn = await cached.promise;
-  return cached.conn;
+  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
 }
 
-// --- Schemas ---
-
-const numberSchema = new mongoose.Schema({
-  value: { type: Number, required: true },
-  createdAt: { type: Date, default: Date.now }
-});
-
-const submittedIpSchema = new mongoose.Schema({
-  ip: { type: String, required: true, unique: true }
-});
-
-const settingsSchema = new mongoose.Schema({
-  _id: { type: String },
-  resetToken: { type: String, required: true }
-});
-
-const NumberEntry = mongoose.models.NumberEntry || mongoose.model('NumberEntry', numberSchema);
-const SubmittedIp = mongoose.models.SubmittedIp || mongoose.model('SubmittedIp', submittedIpSchema);
-const Settings    = mongoose.models.Settings    || mongoose.model('Settings', settingsSchema);
-
-// --- Helpers ---
+function writeData(data) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
 
 function getClientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
@@ -49,57 +30,25 @@ function getClientIp(req) {
   return req.socket.remoteAddress;
 }
 
-async function getResetToken() {
-  const settings = await Settings.findById('main');
-  return settings ? settings.resetToken : '0';
-}
-
-async function ensureSettings() {
-  const exists = await Settings.findById('main');
-  if (!exists) {
-    await Settings.create({ _id: 'main', resetToken: Date.now().toString() });
-  }
-}
-
-// --- Middleware ---
-
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Connetti DB prima di ogni richiesta API
-app.use('/api', async (req, res, next) => {
-  try {
-    await connectDB();
-    next();
-  } catch (err) {
-    res.status(500).json({ error: 'Connessione al database fallita' });
-  }
-});
-
 // --- API ---
 
-app.get('/api/data', async (req, res) => {
-  try {
-    await ensureSettings();
-    const entries = await NumberEntry.find().sort({ createdAt: 1 });
-    const values = entries.map(e => e.value);
-    const count = values.length;
-    const average = count > 0
-      ? values.reduce((sum, n) => sum + n, 0) / count
-      : null;
-    const resetToken = await getResetToken();
-    res.json({
-      entries: entries.map((e, i) => ({ id: i + 1, value: e.value })),
-      average,
-      count,
-      resetToken
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Errore database' });
-  }
+// GET /api/data
+app.get('/api/data', (req, res) => {
+  const data = readData();
+  const count = data.numbers.length;
+  const average = count > 0
+    ? data.numbers.reduce((sum, n) => sum + n, 0) / count
+    : null;
+  res.json({
+    entries: data.numbers.map((value, i) => ({ id: i + 1, value })),
+    average,
+    count,
+    resetToken: data.resetToken
+  });
 });
 
-app.post('/api/submit', async (req, res) => {
+// POST /api/submit
+app.post('/api/submit', (req, res) => {
   const { number } = req.body;
   const parsed = parseFloat(number);
   if (number === undefined || number === null || number === '' || isNaN(parsed)) {
@@ -107,52 +56,25 @@ app.post('/api/submit', async (req, res) => {
   }
 
   const ip = getClientIp(req);
+  const data = readData();
 
-  try {
-    const alreadySubmitted = await SubmittedIp.findOne({ ip });
-    if (alreadySubmitted) {
-      return res.status(403).json({ error: 'Hai già inviato un numero', alreadySubmitted: true });
-    }
-
-    await NumberEntry.create({ value: parsed });
-    await SubmittedIp.create({ ip });
-
-    const count = await NumberEntry.countDocuments();
-    res.json({ ok: true, count });
-  } catch (err) {
-    res.status(500).json({ error: 'Errore database' });
+  if (data.submittedIps.includes(ip)) {
+    return res.status(403).json({ error: 'Hai già inviato un numero', alreadySubmitted: true });
   }
+
+  data.numbers.push(parsed);
+  data.submittedIps.push(ip);
+  writeData(data);
+
+  res.json({ ok: true, count: data.numbers.length });
 });
 
-app.delete('/api/reset', async (req, res) => {
-  try {
-    await NumberEntry.deleteMany({});
-    await SubmittedIp.deleteMany({});
-    const newToken = Date.now().toString();
-    await Settings.findByIdAndUpdate('main', { resetToken: newToken }, { upsert: true });
-    res.json({ ok: true, resetToken: newToken });
-  } catch (err) {
-    res.status(500).json({ error: 'Errore database' });
-  }
+// DELETE /api/reset
+app.delete('/api/reset', (req, res) => {
+  writeData({ numbers: [], submittedIps: [], resetToken: Date.now().toString() });
+  res.json({ ok: true });
 });
 
-// --- Start (solo in locale, non su Vercel) ---
+// --- Start ---
 
-if (require.main === module) {
-  if (!MONGODB_URI) {
-    console.error('ERROR: Number_App_DB_MONGODB_URI non impostata');
-    process.exit(1);
-  }
-  mongoose.connect(MONGODB_URI)
-    .then(async () => {
-      await ensureSettings();
-      console.log('MongoDB connesso');
-      app.listen(PORT, () => console.log(`Server avviato su http://localhost:${PORT}`));
-    })
-    .catch(err => {
-      console.error('Errore connessione MongoDB:', err.message);
-      process.exit(1);
-    });
-}
-
-module.exports = app;
+app.listen(PORT, () => console.log(`Server avviato su http://localhost:${PORT}`));
